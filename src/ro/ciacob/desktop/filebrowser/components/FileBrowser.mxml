@@ -1,0 +1,1446 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Canvas height="100%"
+           horizontalScrollPolicy="off"
+           initialize="_onInitialize(event)"
+           verticalScrollPolicy="off"
+           width="100%"
+           styleName="secondaryWindow"
+           xmlns:components="ro.ciacob.desktop.filebrowser.components.*"
+           xmlns:fx="http://ns.adobe.com/mxml/2009"
+           xmlns:mx="library://ns.adobe.com/flex/mx"
+           xmlns:s="library://ns.adobe.com/flex/spark">
+
+    <fx:Declarations/>
+
+    <fx:Script>
+		<![CDATA[
+        import flash.filesystem.File;
+
+        import mx.collections.ArrayCollection;
+        import mx.collections.ICollectionView;
+        import mx.collections.IViewCursor;
+        import mx.collections.Sort;
+        import mx.collections.SortField;
+        import mx.controls.Menu;
+        import mx.events.FlexEvent;
+        import mx.events.ListEvent;
+        import mx.events.MenuEvent;
+        import mx.formatters.DateFormatter;
+
+        import ro.ciacob.desktop.assets.graphic.Images;
+        import ro.ciacob.desktop.filebrowser.FileFilterEntry;
+        import ro.ciacob.desktop.filebrowser.FileSelectionEvent;
+        import ro.ciacob.desktop.filebrowser.constants.Durations;
+        import ro.ciacob.desktop.filebrowser.constants.FieldNames;
+        import ro.ciacob.desktop.filebrowser.constants.Sizes;
+        import ro.ciacob.desktop.operation.Procrastinator;
+        import ro.ciacob.utils.Draw;
+        import ro.ciacob.utils.Files;
+        import ro.ciacob.utils.Strings;
+        import ro.ciacob.utils.Time;
+        import ro.ciacob.utils.constants.CommonStrings;
+        import ro.ciacob.utils.constants.FileTypes;
+        import ro.ciacob.utils.constants.GenericFieldNames;
+        import ro.ciacob.utils.constants.GenericSizes;
+
+        private static const ACCESSING_DRIVES:String = 'accessing disk drives...';
+        private static const AVAILABLE:String = ' available';
+        private static const COLLECTIONS_READY:String = 'collectionsReady';
+        private static const DIMENSIONS:String = '%s x %s pixels';
+        private static const DRIVES_ACCESS_DELAY:Number = 1.5;
+        private static const DRIVES_LABEL:String = 'Root Drives';
+        private static const ELIPSIS:String = '...';
+        private static const FILES_ONLY:int = 2;
+        private static const FILES_SORT_CRTITERIA:Array = [{
+            label: 'Name',
+            value: GenericFieldNames.LABEL
+        }, {label: 'Type', value: GenericFieldNames.TYPE}, {label: 'Date', value: FieldNames.TIMESTAMP}, {
+            label: 'Size',
+            value: FieldNames.SIZE
+        }];
+        private static const FOLDERS_AND_FILES:int = 0;
+        private static const FOLDERS_ONLY:int = 1;
+        private static const FOLDERS_SORT_CRITERIA:Array = [{
+            label: 'Name',
+            value: GenericFieldNames.LABEL
+        }, {label: 'Date', value: FieldNames.TIMESTAMP}];
+        private static const FOLDER_DOES_NOT_EXIST:String = 'folder "%s" has been deleted';
+        private static const FOLDER_READ_ERROR:String = 'cannot read folder "%s"';
+        private static const ICON_SIZE:Number = 16;
+        private static const IMAGE_READ_ERROR:String = 'cannot load image';
+        private static const LISTING_FILES:String = 'reading files in folder "%s"...';
+        private static const LISTING_FOLDERS:String = 'reading sub-folders in "%s"...';
+        private static const LOADING_IMAGE:String = 'loading image...';
+        private static const NO_FILES:String = 'no files at this location';
+        private static const NO_FOLDERS:String = 'no folders at this location';
+        private static const NO_MATCHED_ITEMS:String = 'no items matched this filter: "%s"';
+        private static const ONLY:String = 'only';
+        private static const OUTER_BORDER:Number = 10;
+        private static const PARENT_FOLDER_LABEL:String = 'Parent Folder';
+        private static const PREVIEW_SIZE:Number = 128;
+        private static const TOOL_MIN_HEIGHT:Number = 21;
+        private static const TOOL_MIN_WIDTH:Number = 100;
+
+        private var _explicitRequestedFile:File;
+        private var _explicitReqFileWithType:File;
+        private var _fileFilter:Array;
+        private var _files:ArrayCollection;
+        [Bindable]
+        private var _filesSortDirection:int = 0;
+        private var _filesSortOrder:Array;
+        private var _folders:ArrayCollection;
+        [Bindable]
+        private var _foldersSortDirection:int = 0;
+        private var _foldersSortOrder:Array;
+        private var _haveValidImage:Boolean;
+        private var _home:File = File.desktopDirectory;
+        private var _imagePreviewLoader:Loader;
+        private var _isFileFilterChanged:Boolean;
+        private var _isHomeChanged:Boolean;
+
+        private var _isSearchReset:Boolean;
+        private var _isSelectingFoldersAllowed:Boolean = true;
+        private var _isSelectionTypeChanged:Boolean;
+        private var _locationProcrastinator:Procrastinator;
+        [Bindable]
+        private var _minButtonSize:Number = 0;
+        [Bindable]
+        private var _minLabelSize:Number = 0;
+        private var _mustApplyFilteringAndSorting:Boolean;
+        private var _searchValue:String;
+        private var _selectedItem:Object;
+        private var _selectionProcrastinator:Procrastinator;
+
+        public function set fileFilter(value:Array):void {
+            if (!FileFilterEntry.areSetsEqual(_fileFilter, value)) {
+                _fileFilter = null;
+                if (value != null && value.length > 0) {
+                    _fileFilter = [];
+                    for (var i:int = 0; i < value.length; i++) {
+                        var entry:FileFilterEntry = (value[i] as FileFilterEntry);
+                        if (entry != null) {
+                            var item:Object = {};
+                            item[GenericFieldNames.LABEL] = entry.description;
+                            item[GenericFieldNames.DETAILS] = entry.fileExtensions;
+                            _fileFilter.push(item);
+                        }
+                    }
+                }
+                _isFileFilterChanged = true;
+                invalidateProperties();
+            }
+        }
+
+        public function get home():File {
+            return _home;
+        }
+
+
+        public function set home(value:File):void {
+            if (_home != value) {
+                _home = value;
+                _isHomeChanged = true;
+                if (value != null && value.exists && value.isDirectory) {
+                    if (!Strings.isEmpty(_searchValue)) {
+                        search.reset();
+                        _searchValue = null;
+                        _isSearchReset = true;
+                    }
+                }
+                invalidateProperties();
+            }
+        }
+
+        override protected function commitProperties():void {
+            super.commitProperties();
+            if (_isHomeChanged) {
+                _isHomeChanged = false;
+                _selectedItem = null;
+                _explicitRequestedFile = null;
+                _explicitReqFileWithType = null;
+                folders = null;
+                files = null;
+                _clearImagePreview();
+                _updateDetails();
+                _updateButtons();
+                _updateLocation();
+                _updateFoldersList();
+                _updateFilesList();
+                _resetSelection();
+                _updateUserChoice();
+            }
+            if (_isSelectionTypeChanged) {
+                _isSelectionTypeChanged = false;
+                // TODO: implement support for multiple selection
+            }
+            if (_isFileFilterChanged) {
+                _isFileFilterChanged = false;
+                if (_fileFilter == null) {
+                    fileTypeCombo.selectedIndex = -1;
+                    fileTypeCombo.dataProvider = null;
+                    fileTypeCombo.visible = false;
+                } else {
+                    fileTypeCombo.dataProvider = _fileFilter;
+                    fileTypeCombo.visible = true;
+                    fileTypeCombo.selectedIndex = 0;
+                }
+                _mustApplyFilteringAndSorting = true;
+            }
+            if (_isSearchReset) {
+                _isSearchReset = false;
+                _mustApplyFilteringAndSorting = true;
+            }
+            if (_mustApplyFilteringAndSorting) {
+                _mustApplyFilteringAndSorting = false;
+                _applyFilteringAndSorting();
+            }
+        }
+
+        [Bindable]
+        protected function get files():ArrayCollection {
+            return _files;
+        }
+
+        protected function set files(value:ArrayCollection):void {
+            _files = value;
+            _clearListMessage(filesList);
+        }
+
+        [Bindable]
+        protected function get folders():ArrayCollection {
+            return _folders;
+        }
+
+        protected function set folders(value:ArrayCollection):void {
+            _folders = value;
+            _clearListMessage(foldersList);
+        }
+
+        private function _applyFilteringAndSorting():void {
+
+            // Filtering order is:
+            // 1. File type, if there is a file type combo box available.
+            // 2. Search filter, if user typed anything in.
+            //
+            // The file type filtering only applies to files, whereas search
+            // filtering applies both to
+            // folders and files.
+            //
+            // Should filtering remove all the items in a list, a generic message
+            // ('No items matched filter %s.')
+            // is shown.
+
+            var filesFilterCriteria:Array = [];
+            var foldersFilterCriteria:Array = [];
+            var filesFilterLabel:String = '';
+            var foldersFilterLabel:String;
+            var filesSortCriteria:Array = [];
+            var foldersSortCriteria:Array = [];
+            var fileType:Object = {};
+
+            // Setup filtering by file type
+            var haveFileTypeFilter:Boolean = (fileTypeCombo.visible && fileTypeCombo.selectedItem != null);
+            if (haveFileTypeFilter) {
+                var filteringValue:Array = (fileTypeCombo.selectedItem[GenericFieldNames.DETAILS] as Array);
+                // If the filter contains the special value `FOLDERS_ONLY` we
+                // limit the ability of seeing (and choosing) FILES.
+                if (filteringValue.indexOf(FileTypes.FOLDERS_ONLY) >= 0) {
+                    _isSelectingFoldersAllowed = true;
+                    fileType = {
+                        'filteringKey': FieldNames.IS_DIRECTORY,
+                        'filteringValue': [true],
+                        'breakOnFailure': true,
+                        'breakOnSuccess': false
+                    };
+                } else {
+                    // Otherwise, we limit the ability of choosing folders (but we do
+                    // not filter them out — we need the tree of folders in order to
+                    // gain access to the files).
+                    _isSelectingFoldersAllowed = false;
+                    fileType = {
+                        'filteringKey': GenericFieldNames.TYPE,
+                        'filteringValue': filteringValue,
+                        'breakOnFailure': true,
+                        'breakOnSuccess': false
+                    };
+                }
+                filesFilterCriteria.push(fileType);
+                filesFilterLabel = fileTypeCombo.selectedItem[GenericFieldNames.LABEL] || '';
+            } else {
+                // When no filter is given, we let both folders and files to be seen
+                // and chosen.
+                _isSelectingFoldersAllowed = true;
+            }
+
+            // Setup filtering by search field value
+            var haveSearchFilter:Boolean = !Strings.isEmpty(_searchValue);
+            if (haveSearchFilter) {
+                var searchedValue:Object = {'filteringKey': GenericFieldNames.LABEL, 'filteringValue': [_searchValue]};
+                filesFilterCriteria.push(searchedValue);
+                foldersFilterCriteria.push(searchedValue);
+                filesFilterLabel += Strings.isEmpty(filesFilterLabel) ? _searchValue : ', ' + _searchValue;
+                foldersFilterLabel = _searchValue;
+            }
+
+            // Setup sorting by folders sort order and direction
+            var haveFoldersSort:Boolean = (_foldersSortOrder != null && _foldersSortDirection != 0);
+            if (haveFoldersSort) {
+                for (var i:int = 0; i < _foldersSortOrder.length; i++) {
+                    var folderRuleSrc:Object = _foldersSortOrder[i];
+                    var sortFoldersAscending:Object = (_foldersSortDirection == 1) ? true : (_foldersSortDirection == -1) ? false : null;
+                    var folderRule:Object = {
+                        sortingKey: folderRuleSrc['value'],
+                        sortingDirection: sortFoldersAscending
+                    };
+                    foldersSortCriteria.push(folderRule);
+                }
+            }
+
+            // Setup sorting by files sort order and direction
+            var haveFilesSort:Boolean = (_filesSortOrder != null && _filesSortDirection != 0);
+            if (haveFilesSort) {
+                for (var j:int = 0; j < _filesSortOrder.length; j++) {
+                    var fileRuleSrc:Object = _filesSortOrder[j];
+                    var sortFilesAscending:Object = (_filesSortDirection == 1) ? true : (_filesSortDirection == -1) ? false : null;
+                    var fileRule:Object = {sortingKey: fileRuleSrc['value'], sortingDirection: sortFilesAscending};
+                    filesSortCriteria.push(fileRule);
+                }
+            }
+
+            // Perform filtering and sorting
+
+            // FOLDERS
+            if (folders != null) {
+                if (folders.list.length > 0) {
+                    _clearListMessage(foldersList);
+                    var foldersFilterScore:Point = _refineCollection(folders, foldersFilterCriteria, foldersSortCriteria);
+                    if (foldersFilterScore.x == 0 && foldersFilterScore.y > 0) {
+                        _showListMessage(foldersList, NO_MATCHED_ITEMS.replace('%s', foldersFilterLabel));
+                    }
+                }
+            }
+
+            // FILES
+            if (files != null) {
+                if (files.list.length > 0) {
+                    _clearListMessage(filesList);
+                    var filesFilterScore:Point = _refineCollection(files, filesFilterCriteria, filesSortCriteria);
+                    if (filesFilterScore.x == 0 && filesFilterScore.y > 0) {
+                        _showListMessage(filesList, NO_MATCHED_ITEMS.replace('%s', filesFilterLabel));
+                    }
+                }
+            }
+
+            // We may have filtered out the file/folder user had previously selected,
+            // so we must update the
+            // "selection" text field and related buttons.
+            _updateUserChoice();
+        }
+
+        private function _asyncList(folder:File):void {
+            if (!folder.hasEventListener(FileListEvent.DIRECTORY_LISTING)) {
+                folder.addEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
+                folder.addEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
+                folder.getDirectoryListingAsync();
+            }
+        }
+
+        private function _clearImagePreview():void {
+            imagePreview.source = null;
+            imageSizeLabel.text = '';
+        }
+
+        private function _clearListMessage(fromAboveThisList:List):void {
+            var targetLabel:mx.controls.Label;
+            switch (fromAboveThisList) {
+                case foldersList:
+                    targetLabel = foldersMessageLabel;
+                    break;
+                case filesList:
+                    targetLabel = filesMessageLabel;
+                    break;
+            }
+            if (targetLabel != null) {
+                targetLabel.visible = false;
+                targetLabel.text = '';
+            }
+            var dummy:Error = new Error;
+        }
+
+        private function _isFileSelected(file:File):Boolean {
+            return (_selectedItem != null && _selectedItem[GenericFieldNames.FILE] === file);
+        }
+
+        private function _loadImagePreview():void {
+            var selectedFile:File = (_selectedItem[GenericFieldNames.FILE] as File);
+            if (selectedFile != null && selectedFile.exists) {
+                imagePreview.source = Images.HOURGLASS_16;
+                imageSizeLabel.text = LOADING_IMAGE;
+                var success:Function = function (bitmap:BitmapData):void {
+                    // Only show the preview if selection hasn't changed
+                    if (_isFileSelected(selectedFile)) {
+                        imageSizeLabel.text = DIMENSIONS.replace('%s', bitmap.width).replace('%s', bitmap.height);
+                        if (bitmap.width > PREVIEW_SIZE || bitmap.height > PREVIEW_SIZE) {
+                            var ratio:Number = Math.max(PREVIEW_SIZE / bitmap.width, PREVIEW_SIZE / bitmap.height);
+                            bitmap = Draw.scaleBitmapData(bitmap, ratio);
+                        }
+                        bitmap = Draw.cropBitmapData(bitmap, new Rectangle(0, 0, PREVIEW_SIZE, PREVIEW_SIZE), 0.5, 0.5);
+                        imagePreview.source = bitmap;
+                    } else {
+                        _clearImagePreview();
+                    }
+                }
+                var failure:Function = function (event:Event /* AsyncErrorEvent, or IOErrorEvent, or SecurityErrorEvent */):void {
+                    imagePreview.source = Images.EXCLAMATION_MARK_16;
+                    imageSizeLabel.text = IMAGE_READ_ERROR;
+                }
+                if (_imagePreviewLoader == null) {
+                    _imagePreviewLoader = new Loader;
+                }
+                Draw.imageFileToBitmapData(selectedFile, success, failure, null, _imagePreviewLoader);
+            }
+        }
+
+        private function _makeCollection(source:Array, filter:int = FOLDERS_AND_FILES, icon:Class = null):ArrayCollection {
+            var collection:ArrayCollection = new ArrayCollection;
+            for (var i:int = 0; i < source.length; i++) {
+                var file:File = (source[i] as File);
+                if (file != null && Files.isVisible(file)) {
+                    var mustIncludeFile:Boolean = (filter == FOLDERS_AND_FILES) || (file.isDirectory && filter == FOLDERS_ONLY) || (!file.isDirectory && filter == FILES_ONLY);
+                    if (mustIncludeFile) {
+                        var itemData:Object = {};
+                        itemData[GenericFieldNames.LABEL] = Strings.trim(file.name);
+                        itemData[FieldNames.TIMESTAMP] = file.creationDate;
+                        if (icon != null) {
+                            itemData[GenericFieldNames.ICON] = icon;
+                        } else {
+                            itemData[GenericFieldNames.ICON] = (file.isDirectory ? Images.FOLDER_32 : Images.FILE_32);
+                        }
+                        itemData[GenericFieldNames.FILE] = file;
+                        if (!file.isDirectory) {
+                            itemData[FieldNames.SIZE] = file.size;
+                            itemData[GenericFieldNames.TYPE] = file.extension;
+                        }
+                        collection.addItem(itemData);
+                    }
+                }
+            }
+            return collection;
+        }
+
+        private function _makeFilesListData(source:Array):ArrayCollection {
+            return _makeCollection(source, FILES_ONLY);
+        }
+
+        private function _makeFoldersListData(source:Array):ArrayCollection {
+            return _makeCollection(source, FOLDERS_ONLY);
+        }
+
+        /**
+         * "Trims" a file name by actually creating and returning  a new File based on the trimmed name of the provided
+         * one. Unfortunatelyn the "name" property of File objects is read-only.
+         */
+        private function _trimFileName (file : File) : File {
+            var fileParent : File = file.parent;
+            var fileName : String = Strings.trim (Files.getStrippedOffFileName (file));
+            var fileExtension : String = file.extension;
+            if (CommonStrings.DOT.concat (fileExtension) == fileName) {
+                fileExtension = null;
+            }
+            var replacementFileNameWithType : String = (fileExtension? fileName.concat (CommonStrings.DOT, fileExtension) : fileName);
+            var replacementFile : File = fileParent? fileParent.resolvePath (replacementFileNameWithType) :
+                    new File (replacementFileNameWithType);
+            return replacementFile;
+        }
+
+        private function _onCancelButtonClick(event:MouseEvent):void {
+            var cancelEvent:FileSelectionEvent = new FileSelectionEvent(FileSelectionEvent.FILE_CANCELLED);
+            dispatchEvent(cancelEvent);
+        }
+
+        private function _onDirectoriesEnumerated(event:FileListEvent):void {
+            parent.removeEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
+            parent.removeEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
+            var foldersCollection:ArrayCollection = _makeFoldersListData(event.files);
+            folders = foldersCollection;
+            if (folders.length == 0) {
+                _showListMessage(foldersList, NO_FOLDERS);
+            }
+            files = _makeFilesListData(event.files);
+            if (files.length == 0) {
+                _showListMessage(filesList, NO_FILES);
+            }
+            _applyFilteringAndSorting();
+            _updateUserChoice();
+            dispatchEvent(new Event(COLLECTIONS_READY));
+        }
+
+        private function _onDirectoriesListingError(event:IOErrorEvent):void {
+            parent.removeEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
+            parent.removeEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
+            var collection:ArrayCollection = new ArrayCollection;
+            folders = collection;
+            _showListMessage(foldersList, FOLDER_READ_ERROR.replace('%s', _home.name));
+            _showListMessage(filesList, FOLDER_READ_ERROR.replace('%s', _home.name));
+        }
+
+        private function _onFileOrFolderSelected(event:ListEvent):void {
+            // Clear any file entered by the user in the "selection" field, if any
+            _explicitRequestedFile = null;
+            _explicitReqFileWithType = null;
+
+            // Make sure a single list is selected at a time
+            var list:List = (event.target as List);
+            if (list != null) {
+                switch (list) {
+                    case foldersList:
+                        filesList.selectedIndex = -1;
+                        break;
+                    case filesList:
+                        foldersList.selectedIndex = -1;
+                        break;
+                }
+                _selectedItem = null;
+                var item:Object = list.selectedItem;
+                if (item != null) {
+                    var file:File = (item[GenericFieldNames.FILE] as File);
+                    if (file != null) {
+                        _selectedItem = item;
+                    }
+                }
+            }
+            _updateDetails();
+            _updateUserChoice();
+        }
+
+        private function _onFileTypeChange(event:Event):void {
+            _explicitRequestedFile = null;
+            _explicitReqFileWithType = null;
+            _applyFilteringAndSorting();
+        }
+
+        private function _onFolderChanged(event:ListEvent):void {
+            var item:Object = event.itemRenderer.data;
+            if (item != null) {
+                var file:File = (item[GenericFieldNames.FILE] as File);
+                // A null file is legit, it links back to the drives list;
+                // a non-null, yet non-existing folder, however, is not - it means
+                // that we are dealing with an old, cached version of the file
+                // system. We'll try to recover gracefully from it.
+                if (file != null && !file.exists) {
+                    folders = new ArrayCollection;
+                    files = new ArrayCollection;
+                    _showListMessage(foldersList, FOLDER_DOES_NOT_EXIST.replace('%s', file.name));
+                    _showListMessage(filesList, NO_FILES);
+                    return;
+                }
+                home = file;
+            }
+        }
+
+        private function _onInitialize(event:FlexEvent):void {
+            _updateDetails();
+            _updateUserChoice();
+            search.addEventListener(Event.CHANGE, _onSearchFilterChanged);
+            _locationProcrastinator = new Procrastinator(_proofUserLocation, Durations.TEXT_COMMIT_DELAY);
+            _selectionProcrastinator = new Procrastinator(_proofUserSelection, Durations.TEXT_COMMIT_DELAY);
+        }
+
+        private function _onLabelReady(event:FlexEvent):void {
+            // This makes sure the two labels, "Location" and "Selection" have the
+            // same width.
+            var label:mx.controls.Label = (event.target as mx.controls.Label);
+            if (_minLabelSize < label.width) {
+                _minLabelSize = label.width;
+            }
+        }
+
+        private function _onLoadPreviewChange(event:Event):void {
+            if (loadPreviewCheckbox.selected && _haveValidImage) {
+                _loadImagePreview();
+            } else {
+                _clearImagePreview();
+            }
+        }
+
+        private function _onLocationExplicitCommit(event:Event):void {
+            _locationProcrastinator.doItNow();
+        }
+
+        private function _onLocationExternallyChanged(event:Event):void {
+            _locationProcrastinator.procrastinate();
+        }
+
+        private function _onOKButtonClick(event:MouseEvent):void {
+            var selectedFile:File = (_selectedItem == null) ? null : (_selectedItem[GenericFieldNames.FILE] as File);
+            if (selectedFile == null) {
+                selectedFile = _explicitReqFileWithType;
+
+                // User might have added leading or trailing spaces, which are a bad thing (under Windows at least).
+                selectedFile = _trimFileName (selectedFile);
+            }
+            var selectEvent:FileSelectionEvent = new FileSelectionEvent(FileSelectionEvent.FILE_SELECTED, selectedFile);
+            dispatchEvent(selectEvent);
+        }
+
+        private function _onSearchFilterChanged(event:Event):void {
+            _searchValue = search.value;
+            _applyFilteringAndSorting();
+        }
+
+        private function _onSelectionExplicitCommit(event:Event):void {
+            _selectionProcrastinator.doItNow();
+        }
+
+        private function _onSelectionExternallyChanged(event:Event):void {
+            _selectionProcrastinator.procrastinate();
+            // We disable the "OK" button the very moment user manually changes the
+            // "Selection" field. Should user input prove valid, the button will be re-enabled as
+            // soon as validation completes.
+            if (okButton.enabled) {
+                okButton.enabled = false;
+            }
+        }
+
+        private function _onSortButtonInitialize(event:FlexEvent):void {
+            var button:PopUpButton = (event.target as PopUpButton);
+            var dataProvider:Array;
+            switch (button) {
+                case foldersSort:
+                    dataProvider = FOLDERS_SORT_CRITERIA;
+                    break;
+                case filesSort:
+                    dataProvider = FILES_SORT_CRTITERIA;
+                    break;
+            }
+
+            // Initialize the popup
+            var popup:Menu = new Menu;
+            popup.labelField = 'label';
+            popup.dataProvider = dataProvider;
+            popup.owner = button;
+            popup.enabled = true;
+            popup.addEventListener(MenuEvent.ITEM_CLICK, _onSortOrderChange);
+
+            // Initialize the button
+            button.label = ELIPSIS;
+            button.popUp = popup;
+            button.addEventListener(MouseEvent.CLICK, _onSortDirectionChange);
+        }
+
+        private function _onSortDirectionChange(event:MouseEvent):void {
+            var button:PopUpButton = (event.target as PopUpButton);
+            if (button != null) {
+                switch (button) {
+                    case foldersSort:
+                        if (_foldersSortOrder != null) {
+                            if (_foldersSortDirection == 0) {
+                                _foldersSortDirection = 1;
+                            } else {
+                                _foldersSortDirection *= -1;
+                            }
+                            _applyFilteringAndSorting();
+                        }
+                        break;
+                    case filesSort:
+                        if (_filesSortOrder != null) {
+                            if (_filesSortDirection == 0) {
+                                _filesSortDirection = 1;
+                            } else {
+                                _filesSortDirection *= -1;
+                            }
+                            _applyFilteringAndSorting();
+                        }
+                        break;
+                }
+            }
+        }
+
+        private function _onSortOrderChange(event:MenuEvent):void {
+            var menu:Menu = (event.target as Menu);
+            if (menu != null) {
+                var button:PopUpButton = (menu.owner as PopUpButton);
+                if (button != null) {
+                    var selection:Object = event.item;
+                    if (selection != null) {
+                        button.label = selection[GenericFieldNames.LABEL];
+                        var selIndex:int;
+                        switch (button) {
+                            case foldersSort:
+                                if (_foldersSortDirection == 0) {
+                                    _foldersSortDirection = 1;
+                                }
+                                selIndex = FOLDERS_SORT_CRITERIA.indexOf(selection);
+                                _foldersSortOrder = FOLDERS_SORT_CRITERIA.concat();
+                                _foldersSortOrder.splice(selIndex, 1);
+                                _foldersSortOrder.unshift(selection);
+                                break;
+                            case filesSort:
+                                if (_filesSortDirection == 0) {
+                                    _filesSortDirection = 1;
+                                }
+                                selIndex = FILES_SORT_CRTITERIA.indexOf(selection);
+                                _filesSortOrder = FILES_SORT_CRTITERIA.concat();
+                                _filesSortOrder.splice(selIndex, 1);
+                                _filesSortOrder.unshift(selection);
+                                break;
+                        }
+                        _applyFilteringAndSorting();
+                    }
+                }
+            }
+        }
+
+        private function _onUpFolderButtonInit(event:FlexEvent):void {
+            var iconStyle:* = upFolderButton.getStyle('icon');
+            var buttonIcon:Class = (upFolderButton.getStyle('icon') as Class);
+            if (buttonIcon != null) {
+                var bmp:BitmapData = Draw.resourceToBitmapData(buttonIcon);
+                var bmpW:Number = bmp.width;
+                upFolderButton.width = (bmpW * 2);
+            }
+        }
+
+        private function _onUpFolderClick(event:MouseEvent):void {
+            if (home != null) {
+                home = home.parent;
+            }
+        }
+
+        private function _programmaticallyClearSelection():void {
+            foldersList.selectedIndex = -1;
+            foldersList.dispatchEvent(new ListEvent(ListEvent.CHANGE));
+            filesList.selectedIndex = -1;
+            filesList.dispatchEvent(new ListEvent(ListEvent.CHANGE));
+        }
+
+        private function _programmaticallySelectFileOrFolder(file:File):void {
+            if (file != null) {
+                var callback:Function = function ():void {
+                    var collection:ICollectionView = file.isDirectory ? folders : files;
+                    var list:List = file.isDirectory ? foldersList : filesList;
+                    var cursor:IViewCursor = collection.createCursor();
+                    var search:Object = {};
+                    search[GenericFieldNames.LABEL] = file.name;
+                    var found:Boolean = false;
+                    try {
+                        found = cursor.findAny(search);
+                    } catch (e:Error) {
+                        // Thrown if collection was never sorted: ignore.
+                    }
+                    if (found) {
+                        var foundItem:Object = cursor.current;
+                        var foundIndex:int = ArrayCollection(collection).getItemIndex(foundItem);
+                        list.selectedIndex = foundIndex;
+                        list.scrollToIndex(foundIndex);
+                        var changeEvent:ListEvent = new ListEvent(ListEvent.CHANGE);
+                        list.dispatchEvent(changeEvent);
+                    }
+                }
+                if (folders != null && files != null) {
+                    removeEventListener(COLLECTIONS_READY, callback);
+                    callback();
+                } else {
+                    addEventListener(COLLECTIONS_READY, callback);
+                }
+            }
+        }
+
+        private function _proofUserLocation():void {
+            var providedLocation:String = Strings.trim(locationTextInput.text);
+            if (!Strings.isEmpty(providedLocation)) {
+                if (_home == null || providedLocation != _home.nativePath) {
+                    if (Files.isValidPath(providedLocation, false)) {
+                        var providedFile:File = new File(providedLocation);
+                        if (providedFile.isDirectory && providedFile.exists) {
+                            home = providedFile;
+                        } else {
+                            var parentFolder:File = providedFile.parent;
+                            if (parentFolder && parentFolder.exists) {
+                                home = parentFolder;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private function _proofUserSelection():void {
+//            var providedSelection:String = Strings.trim(selectionTextInput.text);
+            var providedSelection:String = selectionTextInput.text;
+            if (Strings.canHaveInfo (providedSelection)) {
+                var selectedFile:File = (_selectedItem == null) ? null : _selectedItem[GenericFieldNames.FILE];
+                if (selectedFile == null || providedSelection != selectedFile.name) {
+
+                    var providedRelativePath:String;
+
+                    // User has entered an absolute path
+                    if (Files.isValidPath(providedSelection, false)) {
+                        var providedFile:File = new File(providedSelection);
+                        var parentFile:File = providedFile.parent;
+                        if (parentFile.exists) {
+                            home = parentFile;
+                            providedRelativePath = providedFile.name;
+                        }
+                    } else {
+                        // User has entered a relative path
+                        if (Files.isValidRelativePath(providedSelection)) {
+                            providedRelativePath = providedSelection;
+                        }
+                    }
+
+                    // One way or another, we have a file name to deal with
+                    if (providedRelativePath != null) {
+                        var resolvedFileWithType:File;
+                        if (_home != null) {
+                            var resolvedFile:File = _home.resolvePath(providedRelativePath);
+                            var haveFileTypeFilter:Boolean = (fileTypeCombo.visible && fileTypeCombo.selectedItem != null);
+                            if (haveFileTypeFilter) {
+                                var allowedFileTypes:Array = (fileTypeCombo.selectedItem[GenericFieldNames.DETAILS] as Array);
+                                if (allowedFileTypes != null) {
+                                    var preferredFileType:String = allowedFileTypes[0];
+                                    resolvedFileWithType = Files.changeFileExtension(resolvedFile, preferredFileType, allowedFileTypes, true);
+                                }
+                            }
+                            if (resolvedFileWithType.exists) {
+                                _programmaticallySelectFileOrFolder(resolvedFileWithType);
+                            } else {
+                                _programmaticallyClearSelection();
+                                _explicitRequestedFile = resolvedFile;
+                                _explicitReqFileWithType = resolvedFileWithType;
+                            }
+                            _updateUserChoice();
+                        }
+                    }
+                }
+            }
+        }
+
+        /**
+         * @private
+         * Filters out certain items in a collection. An item will be omitted if:
+         * a) it does not contain a property named <filteringKey>, or
+         * b) it does contain such property, but the value of that property does not contain the substring
+         *    <filteringValue>.
+         *
+         * @param 	collection
+         * 			The collection to filter.
+         *
+         * @param	filterCriteria
+         * 			A chain of criteria to match against every particular item. Technically, this chain is
+         * 			an array holding objects with these keys:
+         *
+         * 			- "filteringKey": a named property expected to be found in each item. If not set, criteria will be skipped.
+         *
+         * 			- "filteringValue": a substring expected to be found within the value of the named property described
+         * 			  above. If not set, criteria will be skipped.
+         *
+         * 			- "breakOnFailure": a boolean, indicating whether failure to match an item will break out from the criteria
+         *            chain, yelding a "not found" result, or will allow the search to continue down the chain. If not set, it
+         * 			  will be assumed false.
+         *
+         * 			- "breakOnSuccess": a boolean, indicating whether success to match an item will break out from the criteria
+         * 			  chain, yelding a "found" result immediately, or will allow the search to continue down the chain, posiibly
+         * 			  invalidating the positive result. If not set, it will be assumed false.
+         *
+         * 			You may set the filterCriteria argument to null, which will return the original collection, with no changes.
+         *
+         * @param	sortCriteria
+         * 			A chain of criteria to determine the order in which filtered items appear. Technically, this chain is
+         *          an array holding objects with this keys:
+         *
+         * 			- "sortingKey": a named property expected to be found in each item. If not set, criteria will be skipped.
+         *
+         * 			- "sortingDirection": a boolean, indicating whether sorting will be done ascending (e.g.: A, B, C) or
+         *            descending (e.g.: C, B, A). If not set, it will be assumed false (that is, descending).
+         *
+         * 			You may set the sortCriteria argument to null, which will return items in their natural order.
+         *
+         * @return	A Point object, holding the number of items after filtering (x), versus the number of items before
+         * 			filtering (y).
+         */
+        private function _refineCollection(collection:ArrayCollection, filterCriteria:Array, sortCriteria:Array):Point {
+            collection.filterFunction = null;
+            collection.sort = null;
+            // FILTER
+            if (filterCriteria != null && filterCriteria.length > 0) {
+                var filter:Function = function (item:Object):Boolean {
+                    var haveMatch:Boolean = false;
+                    for (var j:int = 0; j < filterCriteria.length; j++) {
+                        var criteriaItem:Object = filterCriteria[j];
+                        var filteringKey:String = criteriaItem['filteringKey'];
+                        var filteringValue:Array = criteriaItem['filteringValue'];
+                        var breakOnFailure:Boolean = (criteriaItem['breakOnFailure'] === true);
+                        var breakOnSuccess:Boolean = (criteriaItem['breakOnSuccess'] === true);
+                        if (filteringKey != null && filteringValue != null) {
+                            if (filteringKey in item) {
+                                var actualValue:String = (item[filteringKey] as String);
+                                if (actualValue != null) {
+                                    actualValue = Strings.trim(actualValue).toLowerCase();
+                                    for (var i:int = 0; i < filteringValue.length; i++) {
+                                        var expectedValue:String = Strings.trim(filteringValue[i]).toLowerCase();
+                                        haveMatch = (actualValue.indexOf(expectedValue) >= 0);
+                                        if (haveMatch) {
+                                            if (breakOnSuccess) {
+                                                return true;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                    if (breakOnFailure && !haveMatch) {
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return haveMatch;
+                }
+                collection.filterFunction = filter;
+            }
+            // SORT
+            if (sortCriteria != null && sortCriteria.length > 0) {
+                var sort:Sort = new Sort;
+                var fields:Array = [];
+                for (var i:int = 0; i < sortCriteria.length; i++) {
+                    var criteriaItem:Object = sortCriteria[i];
+                    if (criteriaItem != null) {
+                        var sortingKey:String = (criteriaItem['sortingKey'] as String);
+                        if (sortingKey != null) {
+                            var isAscending:Boolean = criteriaItem['sortingDirection'] === true;
+                            var field:SortField = new SortField(sortingKey, true, !isAscending);
+                            fields.push(field);
+                        }
+                    }
+                }
+                sort.fields = fields;
+                collection.sort = sort;
+            }
+            collection.refresh();
+            return new Point(collection.length, collection.list.length);
+        }
+
+        private function _resetSelection():void {
+        }
+
+        private function _showDrives():void {
+            _showListMessage(foldersList, ACCESSING_DRIVES);
+            ro.ciacob.utils.Time.delay(DRIVES_ACCESS_DELAY, function ():void {
+                var drives:Array = File.getRootDirectories();
+                folders = _makeFoldersListData(drives);
+            });
+        }
+
+        private function _showFilesFor(parent:File):void {
+            _showListMessage(filesList, LISTING_FILES.replace('%s', _home.name));
+            _asyncList(parent);
+        }
+
+        private function _showFoldersFor(parent:File):void {
+            _showListMessage(foldersList, LISTING_FOLDERS.replace('%s', _home.name));
+            _asyncList(parent);
+        }
+
+        private function _showListMessage(aboveList:List, message:String):void {
+            var targetLabel:mx.controls.Label;
+            switch (aboveList) {
+                case foldersList:
+                    targetLabel = foldersMessageLabel;
+                    break;
+                case filesList:
+                    targetLabel = filesMessageLabel;
+                    break;
+            }
+            if (targetLabel != null) {
+                targetLabel.visible = true;
+                targetLabel.text = message;
+            }
+        }
+
+        private function _updateButtons():void {
+            if (home != null) {
+                upFolderButton.enabled = true;
+                foldersSort.enabled = true;
+                filesSort.enabled = true;
+                upFolderButton.toolTip = PARENT_FOLDER_LABEL;
+                if (_foldersSortOrder == null) {
+                    _foldersSortOrder = FOLDERS_SORT_CRITERIA.concat();
+                    _foldersSortDirection = 1;
+                    foldersSort.label = _foldersSortOrder[0][GenericFieldNames.LABEL];
+                }
+                if (_filesSortOrder == null) {
+                    _filesSortOrder = FILES_SORT_CRTITERIA.concat();
+                    _filesSortDirection = 1;
+                    filesSort.label = _filesSortOrder[0][GenericFieldNames.LABEL];
+                }
+            } else {
+                upFolderButton.enabled = false;
+                foldersSort.enabled = false;
+                filesSort.enabled = false;
+                _foldersSortOrder = null;
+                _foldersSortDirection = 0;
+                foldersSort.label = ELIPSIS;
+                _filesSortOrder = null;
+                _filesSortDirection = 0;
+                filesSort.label = ELIPSIS;
+            }
+        }
+
+        private function _updateDetails():void {
+            _haveValidImage = false;
+            if (_selectedItem == null) {
+                detailsGrid.visible = false;
+                noSelectionNotice.visible = true;
+            } else {
+                detailsGrid.visible = true;
+                noSelectionNotice.visible = false;
+
+                var selectedFile:File = (_selectedItem[GenericFieldNames.FILE] as File);
+                if (selectedFile != null) {
+
+                    // Update file icon
+                    var icons:Array = Draw.getFileIcons(selectedFile);
+                    if (icons != null) {
+                        var icon:BitmapData = (icons[icons.length - 1] as BitmapData);
+                        fileIcon.source = icon;
+                    }
+
+                    // Update file name
+                    detailsFileName.text = selectedFile.name;
+
+                    // Update file type
+                    if (selectedFile.isDirectory) {
+                        if (selectedFile.parent != null) {
+                            fileTypeLabel.text = 'File Folder';
+                        } else {
+                            fileTypeLabel.text = 'Disk Drive';
+                        }
+                    } else {
+                        fileTypeLabel.text = 'Unknown';
+                        if (selectedFile.exists) {
+                            if (selectedFile.extension != null) {
+                                fileTypeLabel.text = selectedFile.extension.toUpperCase() + ' File';
+                            }
+                        } else {
+                            fileTypeLabel.text = 'Deleted';
+                        }
+                    }
+
+                    // Update file size
+                    var rawSize:Number;
+                    var details:String = '';
+                    if (selectedFile.isDirectory) {
+                        rawSize = selectedFile.spaceAvailable;
+                        details = AVAILABLE;
+                    } else {
+                        rawSize = selectedFile.exists ? selectedFile.size : 0;
+                        if (rawSize == 0) {
+                            if (_selectedItem[FieldNames.SIZE] != null) {
+                                var savedSize:Number = parseInt(_selectedItem[FieldNames.SIZE]);
+                                if (!isNaN(savedSize) && savedSize >= 0) {
+                                    rawSize = savedSize;
+                                }
+                            }
+                        }
+                    }
+                    fileSizeLabel.text = Files.formatFileSize(rawSize).concat(details);
+
+                    // Update file date
+                    var rawDate:Date = selectedFile.creationDate;
+                    var formatter:DateFormatter = new DateFormatter;
+                    formatter.formatString = Time.TIMESTAMP_DEFAULT;
+                    var date:String = formatter.format(rawDate);
+                    fileDateLabel.text = date;
+
+                    // Update image preview: for PNG and JPEG files only
+                    _haveValidImage = selectedFile.exists && Files.isFileOfType(selectedFile, [FileTypes.PNG, FileTypes.JPEG, FileTypes.JPG]);
+                    loadPreviewCheckbox.visible = _haveValidImage;
+                    loadPreviewCheckbox.includeInLayout = _haveValidImage;
+                    imagePreview.visible = _haveValidImage;
+                    imagePreview.includeInLayout = _haveValidImage;
+                    imageSizeLabel.visible = _haveValidImage;
+                    imageSizeLabel.includeInLayout = _haveValidImage;
+                    if (_haveValidImage && loadPreviewCheckbox.selected) {
+                        _loadImagePreview();
+                    }
+                }
+            }
+        }
+
+        private function _updateFilesList():void {
+            if (_home == null) {
+                _showListMessage(filesList, NO_FILES);
+            } else {
+                _showFilesFor(_home);
+            }
+        }
+
+        private function _updateFoldersList():void {
+            if (_home == null) {
+                _showDrives();
+            } else {
+                _showFoldersFor(_home);
+            }
+        }
+
+        private function _updateLocation():void {
+            if (_home == null) {
+                locationTextInput.text = DRIVES_LABEL;
+            } else {
+                locationTextInput.text = _home.nativePath;
+            }
+            var lastIndex:int = locationTextInput.text.length;
+            locationTextInput.setSelection(lastIndex, lastIndex)
+        }
+
+        private function _updateUserChoice():void {
+            selectionTextInput.text = '';
+            okButton.enabled = false;
+            // The user may either select, or type-in the file to be returned;
+            // typing a file name takes precedence.
+            var selectedFile:File;
+            if (_explicitRequestedFile != null) {
+                selectedFile = _explicitRequestedFile;
+            } else {
+                if (_selectedItem != null) {
+                    selectedFile = (_selectedItem[GenericFieldNames.FILE] as File);
+                }
+            }
+            if (selectedFile != null) {
+                if (selectedFile.isDirectory && !_isSelectingFoldersAllowed) {
+                    return;
+                }
+                selectionTextInput.text = selectedFile.name;
+                okButton.enabled = true;
+            }
+        }
+        ]]>
+	</fx:Script>
+
+    <mx:Canvas
+            height="{height - cancelButton.height - GenericSizes.MEDIUM_SPACE * 3 }"
+            horizontalScrollPolicy="off"
+            id="mainHolder"
+            verticalScrollPolicy="off"
+            width="{width - GenericSizes.MEDIUM_SPACE * 2}"
+            x="{GenericSizes.MEDIUM_SPACE}"
+            y="{GenericSizes.MEDIUM_SPACE}">
+
+        <!-- Location and filter row -->
+        <mx:Label id="locationLabel"
+                  minWidth="{_minLabelSize}"
+                  text="Location:"
+                  letterSpacing="1"
+                  updateComplete="_onLabelReady(event)"
+                  x="{GenericSizes.MEDIUM_SPACE}"
+                  y="{GenericSizes.MEDIUM_SPACE}"/>
+
+        <mx:TextInput change="_onLocationExternallyChanged(event)"
+                      enter="_onLocationExplicitCommit(event)"
+                      focusSkin="{null}"
+                      letterSpacing="0.5"
+                      id="locationTextInput"
+                      width="{ search.x - locationTextInput.x - GenericSizes.MEDIUM_SPACE * 2}"
+                      x="{locationLabel.x + locationLabel.width + GenericSizes.SMALL_SPACE}"
+                      y="{locationLabel.y + (locationLabel.height - locationTextInput.height) * 0.5 }"/>
+
+        <components:FilterTextField id="search"
+                                    width="{GenericSizes.SEARCH_FILTER_WIDTH}"
+                                    x="{mainHolder.width - search.width - GenericSizes.MEDIUM_SPACE}"
+                                    y="{locationLabel.y + (locationLabel.height - search.height) * 0.5}"/>
+
+        <!-- Folders and files lists, selection details -->
+        <mx:HDividedBox
+                height="{mainHolder.height - panelsHolder.y - selectionLabel.height - GenericSizes.SMALL_SPACE - GenericSizes.MEDIUM_SPACE * 4}"
+                horizontalScrollPolicy="off"
+                id="panelsHolder"
+                verticalScrollPolicy="off"
+                width="{mainHolder.width - GenericSizes.MEDIUM_SPACE * 2}"
+                x="{GenericSizes.MEDIUM_SPACE}"
+                y="{Math.max (locationLabel.y + locationLabel.height, locationTextInput.y + locationTextInput.height, search.y + search.height) + GenericSizes.MEDIUM_SPACE}">
+
+            <!-- Folders column -->
+            <mx:Canvas height="100%"
+                       horizontalScrollPolicy="off"
+                       id="foldersColumn"
+                       minWidth="260"
+                       verticalScrollPolicy="off"
+                       width="30%">
+
+                <mx:Label id="foldersHeader"
+                          fontWeight="bold"
+                          text="Folders"
+                          truncateToFit="true"
+                          width="{foldersColumn.width - foldersSort.width - upFolderButton.width - GenericSizes.SMALL_SPACE * 2}"
+                          x="0"
+                          y="{Math.max (0, (foldersSort.height - foldersHeader.height) * 0.5)}"/>
+
+                <mx:Button styleName="skinnedButton"
+                           click="_onUpFolderClick(event)"
+                           creationComplete="_onUpFolderButtonInit(event)"
+                           disabledIcon="{Images.UP_LEFT_DISABLED_16}"
+                           enabled="false"
+                           icon="{Images.UP_LEFT}"
+                           id="upFolderButton"
+                           minHeight="{foldersSort.height}"
+                           x="{foldersColumn.width - foldersSort.width - upFolderButton.width - GenericSizes.SMALL_SPACE * 2}"
+                           y="{Math.max (0, (foldersHeader.height - upFolderButton.height) * 0.5)}"/>
+
+                <mx:PopUpButton enabled="false"
+                                icon="{(_foldersSortDirection == 1)? Images.UP_16 : (_foldersSortDirection == -1)? Images.DOWN_16 : Images.BLANK}"
+                                id="foldersSort"
+                                initialize="_onSortButtonInitialize(event)"
+                                x="{foldersColumn.width - foldersSort.width - GenericSizes.SMALL_SPACE}"
+                                y="{Math.max (0, (foldersHeader.height - foldersSort.height) * 0.5)}"/>
+
+                <mx:List change="_onFileOrFolderSelected(event)"
+                         dataProvider="{folders}"
+                         doubleClickEnabled="true"
+                         height="{foldersColumn.height - foldersList.y}"
+                         iconField="{GenericFieldNames.ICON}"
+                         id="foldersList"
+                         itemDoubleClick="_onFolderChanged(event)"
+                         itemRenderer="ro.ciacob.desktop.filebrowser.components.FileBrowserItemRenderer"
+                         labelField="{GenericFieldNames.LABEL}"
+                         width="{foldersColumn.width - GenericSizes.SMALL_SPACE}"
+                         x="0"
+                         y="{Math.max(foldersHeader.y + foldersHeader.height, foldersSort.y + foldersSort.height) + GenericSizes.MEDIUM_SPACE}"/>
+
+                <mx:Text id="foldersMessageLabel"
+                         styleName="invertedText"
+                         paddingLeft="10"
+                         paddingRight="10"
+                         selectable="false"
+                         textAlign="center"
+                         width="{foldersList.width}"
+                         y="{foldersList.y + (foldersList.height - foldersMessageLabel.height) * 0.5}"/>
+            </mx:Canvas>
+
+            <!-- Files column -->
+            <mx:Canvas height="100%"
+                       horizontalScrollPolicy="off"
+                       id="filesColumn"
+                       minWidth="260"
+                       verticalScrollPolicy="off"
+                       width="50%">
+
+                <mx:Label id="filesHeader"
+                          fontWeight="bold"
+                          text="Files"
+                          truncateToFit="true"
+                          width="{filesColumn.width - filesSort.width - GenericSizes.SMALL_SPACE - GenericSizes.TINY_SPACE}"
+                          x="{GenericSizes.TINY_SPACE}"
+                          y="{Math.max (0, (filesSort.height - foldersHeader.height) * 0.5)}"/>
+
+                <mx:PopUpButton enabled="false"
+                                icon="{(_filesSortDirection == 1)? Images.UP_16 : (_filesSortDirection == -1)? Images.DOWN_16 : Images.BLANK}"
+                                id="filesSort"
+                                initialize="_onSortButtonInitialize(event)"
+                                x="{filesColumn.width - filesSort.width - GenericSizes.SMALL_SPACE}"
+                                y="{Math.max (0, (filesHeader.height - filesSort.height) * 0.5)}"/>
+
+                <mx:List change="_onFileOrFolderSelected(event)"
+                         dataProvider="{files}"
+                         height="{filesColumn.height - filesList.y}"
+                         id="filesList"
+                         itemRenderer="ro.ciacob.desktop.filebrowser.components.FileBrowserItemRenderer"
+                         width="{filesColumn.width - GenericSizes.SMALL_SPACE - GenericSizes.TINY_SPACE}"
+                         x="{GenericSizes.TINY_SPACE}"
+                         y="{Math.max(filesHeader.y + filesHeader.height, filesSort.y + filesSort.height) + GenericSizes.MEDIUM_SPACE}"/>
+
+                <mx:Text id="filesMessageLabel"
+                         styleName="invertedText"
+                         paddingLeft="10"
+                         paddingRight="10"
+                         selectable="false"
+                         textAlign="center"
+                         width="{filesList.width-GenericSizes.MEDIUM_SPACE}"
+                         y="{filesList.y + (filesList.height - filesMessageLabel.height) * 0.5}"/>
+
+            </mx:Canvas>
+
+            <!-- Selection details column -->
+            <mx:Canvas
+                    height="100%"
+                    horizontalScrollPolicy="off"
+                    id="detailsColumn"
+                    minWidth="160"
+                    verticalScrollPolicy="off"
+                    width="20%">
+
+                <!-- Header -->
+                <mx:Label id="detailsHeader"
+                          text="Details"
+                          width="{detailsColumn.width - GenericSizes.SMALL_SPACE}"
+                          x="{GenericSizes.SMALL_SPACE}"/>
+
+                <mx:Text id="noSelectionNotice"
+                         text="Nothing selected. Select a file or folder to see its details here.&#10;&#10;Double-click a folder to list its content."
+                         visible="false"
+                         width="{detailsColumn.width - GenericSizes.SMALL_SPACE}"
+                         x="{GenericSizes.SMALL_SPACE}"
+                         y="{detailsHeader.y + detailsHeader.height}"/>
+
+                <mx:Grid height="{detailsColumn.height - detailsHeader.height}"
+                         horizontalScrollPolicy="off"
+                         id="detailsGrid"
+                         verticalScrollPolicy="off"
+                         visible="false"
+                         width="{detailsColumn.width - GenericSizes.SMALL_SPACE}"
+                         x="{GenericSizes.SMALL_SPACE}"
+                         y="{detailsHeader.y + detailsHeader.height}">
+
+                    <!-- File Icon and Name -->
+                    <mx:GridRow verticalAlign="middle"
+                                width="100%">
+                        <mx:GridItem colSpan="2"
+                                     horizontalAlign="center">
+                            <s:Image fillMode="scale"
+                                     id="fileIcon"
+                                     maxHeight="{Sizes.DETAIL_ICON_WIDTH}"
+                                     maxWidth="{Sizes.DETAIL_ICON_WIDTH}"
+                                     scaleMode="letterbox"/>
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <mx:GridRow verticalAlign="middle"
+                                width="100%">
+                        <mx:GridItem colSpan="2"
+                                     width="100%">
+                            <mx:Text fontThickness="200"
+                                     id="detailsFileName"
+                                     selectable="false"
+                                     textAlign="center"
+                                     width="100%"/>
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <!-- File Type -->
+                    <mx:GridRow verticalAlign="middle"
+                                width="100%">
+                        <mx:GridItem>
+                            <mx:Label text="Type:"/>
+                        </mx:GridItem>
+
+                        <mx:GridItem width="100%">
+                            <mx:Label id="fileTypeLabel"
+                                      truncateToFit="true"
+                                      width="100%"/>
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <!-- File size -->
+                    <mx:GridRow verticalAlign="middle"
+                                width="100%">
+                        <mx:GridItem>
+                            <mx:Label text="Size:"/>
+                        </mx:GridItem>
+
+                        <mx:GridItem width="100%">
+                            <mx:Label id="fileSizeLabel"/>
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <!-- File creation date -->
+                    <mx:GridRow verticalAlign="middle"
+                                width="100%">
+                        <mx:GridItem>
+                            <mx:Label text="Date:"/>
+                        </mx:GridItem>
+
+                        <mx:GridItem width="100%">
+                            <mx:Label id="fileDateLabel"/>
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <!-- Image preview (if applicable) -->
+                    <mx:GridRow width="100%">
+                        <mx:GridItem colSpan="2"
+                                     width="100%">
+                            <mx:CheckBox change="_onLoadPreviewChange(event)"
+                                         id="loadPreviewCheckbox"
+                                         includeInLayout="false"
+                                         label="Load image preview"
+                                         visible="false"/>
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <mx:GridRow height="100%"
+                                width="100%">
+                        <mx:GridItem colSpan="2"
+                                     height="100%"
+                                     horizontalAlign="center"
+                                     verticalAlign="middle"
+                                     width="100%">
+                            <s:Image fillMode="clip"
+                                     horizontalAlign="center"
+                                     id="imagePreview"
+                                     verticalAlign="middle"/>
+
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <mx:GridRow verticalAlign="middle"
+                                width="100%">
+                        <mx:GridItem colSpan="2"
+                                     horizontalAlign="center"
+                                     width="100%">
+                            <mx:Label id="imageSizeLabel"/>
+
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                </mx:Grid>
+
+            </mx:Canvas>
+        </mx:HDividedBox>
+
+        <!-- Selection and file type row -->
+        <mx:Label id="selectionLabel"
+                  minWidth="{_minLabelSize}"
+                  text="Selection:"
+                  letterSpacing="1"
+                  updateComplete="_onLabelReady(event)"
+                  x="{GenericSizes.MEDIUM_SPACE}"
+                  y="{panelsHolder.y + panelsHolder.height + GenericSizes.LARGE_SPACE}"/>
+
+        <mx:TextInput change="_onSelectionExternallyChanged (event)"
+                      enter="_onSelectionExplicitCommit (event)"
+                      focusSkin="{null}"
+                      id="selectionTextInput"
+                      letterSpacing="0.5"
+                      width="{mainHolder.width - selectionTextInput.x - GenericSizes.MEDIUM_SPACE - (fileTypeCombo.visible? fileTypeCombo.width + GenericSizes.SMALL_SPACE : 0) }"
+                      x="{selectionLabel.x + selectionLabel.width + GenericSizes.SMALL_SPACE}"
+                      y="{selectionLabel.y + (selectionLabel.height - selectionTextInput.height) * 0.5}"/>
+
+        <mx:ComboBox change="_onFileTypeChange(event)"
+                     id="fileTypeCombo"
+                     labelField="{GenericFieldNames.LABEL}"
+                     minHeight="{foldersSort.height}"
+                     visible="false"
+                     x="{mainHolder.width - fileTypeCombo.width - GenericSizes.MEDIUM_SPACE}"
+                     y="{selectionLabel.y + (selectionLabel.height - fileTypeCombo.height) * 0.5}"/>
+
+    </mx:Canvas>
+
+    <!-- "OK" and "Cancel" buttons -->
+    <mx:Button styleName="skinnedButton"
+               click="_onOKButtonClick(event)"
+               enabled="false"
+               id="okButton"
+               label="OK"
+               minHeight="{foldersSort.height}"
+               minWidth="{Sizes.WIDE_BUTTON_SIZE}"
+               x="{cancelButton.x - okButton.width - GenericSizes.MEDIUM_SPACE}"
+               y="{cancelButton.y}"/>
+
+    <mx:Button styleName="skinnedButton"
+               click="_onCancelButtonClick(event)"
+               id="cancelButton"
+               label="Cancel"
+               minHeight="{foldersSort.height}"
+               minWidth="{Sizes.WIDE_BUTTON_SIZE}"
+               x="{width - cancelButton.width - GenericSizes.MEDIUM_SPACE}"
+               y="{height - cancelButton.height - GenericSizes.LARGE_SPACE * 1.5}"/>
+
+</mx:Canvas>

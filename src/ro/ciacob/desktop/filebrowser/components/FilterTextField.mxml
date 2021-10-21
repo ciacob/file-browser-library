@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<mx:Canvas horizontalScrollPolicy="off"
+		   initialize="_onInitialize(event)"
+		   verticalScrollPolicy="off"
+		   xmlns:fx="http://ns.adobe.com/mxml/2009"
+		   xmlns:mx="library://ns.adobe.com/flex/mx"
+		   xmlns:s="library://ns.adobe.com/flex/spark">
+	<fx:Declarations/>
+
+	<fx:Style>
+		@namespace s "library://ns.adobe.com/flex/spark";
+		@namespace mx "library://ns.adobe.com/flex/mx";
+	</fx:Style>
+
+	<fx:Script>
+		<![CDATA[
+			import mx.events.FlexEvent;
+			
+			import ro.ciacob.desktop.filebrowser.constants.Durations;
+			import ro.ciacob.desktop.operation.Procrastinator;
+			import ro.ciacob.utils.Strings;
+			import ro.ciacob.desktop.assets.graphic.Images;
+
+			private static const BORDER_THICKNESS:Number = 1;
+			private static const FIELD_MARGIN:Number = 6;
+			private static const ICON_MARGIN:Number = 8;
+			private static const ICON_SIZE:Number = 16;
+			private static const PROMPT:String = 'Type to filter...';
+			private static const TEXT_HEIGHT:Number = 16;
+
+			private var _procrastinator:Procrastinator;
+			private var _value:String = '';
+
+			public function reset():void {
+				_reset();
+			}
+
+			public function get value():String {
+				return _value;
+			}
+
+			private function _onChangeConfirmed():void {
+				dispatchEvent(new Event(Event.CHANGE));
+			}
+
+			private function _onCloseIconClick(event:MouseEvent):void {
+				_reset();
+				_onInputSelectionChange(null);
+				focusManager.setFocus(promptLabel);
+			}
+
+			private function _onInitialize(event:FlexEvent):void {
+				_procrastinator = new Procrastinator(_onChangeConfirmed, Durations.TEXT_COMMIT_DELAY, this);
+				// Set rounded corners
+				var edgeSize:Number = fieldBackground.height * 0.5;
+				fieldBackground.setStyle('cornerRadius', edgeSize);
+				_reset();
+			}
+
+
+
+			private function _onInputSelectionChange(event:Event):void {
+				closeIcon.visible = (inputField.text.length > 0);
+				promptLabel.visible = (inputField.text.length == 0);
+				var userValue:String = Strings.trim(inputField.text).toLowerCase();
+				if (_value != userValue) {
+					_value = userValue;
+					_procrastinator.procrastinate();
+				}
+			}
+
+			private function _onUserEnterKey(event:Event):void {
+				_procrastinator.doItNow();
+			}
+
+			private function _reset():void {
+				inputField.text = '';
+			}
+		]]>
+	</fx:Script>
+
+	<mx:Box borderStyle="solid"
+			height="{TEXT_HEIGHT + FIELD_MARGIN * 2 }"
+			horizontalScrollPolicy="off"
+			id="fieldBackground"
+			verticalScrollPolicy="off"
+			width="{width - BORDER_THICKNESS * 2}"
+			styleName="textField" />
+
+	<mx:TextInput borderSkin="{null}"
+				  editable="false"
+				  focusSkin="{null}"
+				  id="promptLabel"
+				  selectable="false"
+				  alpha="0.5"
+				  text="{PROMPT}"
+				  width="{inputField.width}"
+				  x="{inputField.x}"
+				  y="{(fieldBackground.height - promptLabel.height) * 0.5}"/>
+
+	<mx:TextInput borderSkin="{null}"
+				  change="_onInputSelectionChange(event)"
+				  enter="_onUserEnterKey(event)"
+				  focusSkin="{null}"
+				  id="inputField"
+				  styleName="inputStyleName"
+				  width="{width - inputField.x - closeIcon.width - ICON_MARGIN}"
+				  x="{magnifyingGlassIcon.x + magnifyingGlassIcon.width + FIELD_MARGIN}"
+				  y="{(fieldBackground.height - inputField.height) * 0.5}"/>
+
+	<s:Image fillMode="clip"
+			 height="{ICON_SIZE}"
+			 id="magnifyingGlassIcon"
+			 source="{Images.MAGNIFYING_GLASS_16}"
+			 width="{ICON_SIZE}"
+			 x="{ICON_MARGIN}"
+			 y="{(fieldBackground.height - magnifyingGlassIcon.height) * 0.5}"/>
+
+	<s:Image click="_onCloseIconClick(event)"
+			 fillMode="clip"
+			 height="{ICON_SIZE}"
+			 id="closeIcon"
+			 source="{Images.CLOSE_16}"
+			 visible="false"
+			 width="{ICON_SIZE}"
+			 x="{width - closeIcon.width - ICON_MARGIN}"
+			 y="{(fieldBackground.height - magnifyingGlassIcon.height) * 0.5}"/>
+
+</mx:Canvas>
+
+
