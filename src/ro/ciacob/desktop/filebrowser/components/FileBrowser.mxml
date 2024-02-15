@@ -14,8 +14,6 @@
 
     <fx:Script>
 		<![CDATA[
-        import flash.filesystem.File;
-
         import mx.collections.ArrayCollection;
         import mx.collections.ICollectionView;
         import mx.collections.IViewCursor;
@@ -36,6 +34,7 @@
         import ro.ciacob.desktop.operation.Procrastinator;
         import ro.ciacob.utils.Draw;
         import ro.ciacob.utils.Files;
+        import ro.ciacob.utils.OSFamily;
         import ro.ciacob.utils.Strings;
         import ro.ciacob.utils.Time;
         import ro.ciacob.utils.constants.CommonStrings;
@@ -47,26 +46,25 @@
         private static const AVAILABLE:String = ' available';
         private static const COLLECTIONS_READY:String = 'collectionsReady';
         private static const DIMENSIONS:String = '%s x %s pixels';
-        private static const DRIVES_ACCESS_DELAY:Number = 1.5;
+        private static const DRIVES_ACCESS_DELAY:Number = 0.1;
         private static const DRIVES_LABEL:String = 'Root Drives';
-        private static const ELIPSIS:String = '...';
+        private static const ROOT_LABEL:String = '[ROOT DIRECTORY]';
+        private static const ELLIPSIS:String = '...';
         private static const FILES_ONLY:int = 2;
-        private static const FILES_SORT_CRTITERIA:Array = [{
-            label: 'Name',
-            value: GenericFieldNames.LABEL
-        }, {label: 'Type', value: GenericFieldNames.TYPE}, {label: 'Date', value: FieldNames.TIMESTAMP}, {
-            label: 'Size',
-            value: FieldNames.SIZE
-        }];
+        private static const FILES_SORT_CRITERIA:Array = [
+            {label: 'Name', value: GenericFieldNames.LABEL},
+            {label: 'Type', value: GenericFieldNames.TYPE},
+            {label: 'Date', value: FieldNames.TIMESTAMP},
+            {label: 'Size', value: FieldNames.SIZE}
+        ];
         private static const FOLDERS_AND_FILES:int = 0;
         private static const FOLDERS_ONLY:int = 1;
-        private static const FOLDERS_SORT_CRITERIA:Array = [{
-            label: 'Name',
-            value: GenericFieldNames.LABEL
-        }, {label: 'Date', value: FieldNames.TIMESTAMP}];
+        private static const FOLDERS_SORT_CRITERIA:Array = [
+            {label: 'Name', value: GenericFieldNames.LABEL},
+            {label: 'Date', value: FieldNames.TIMESTAMP}
+        ];
         private static const FOLDER_DOES_NOT_EXIST:String = 'folder "%s" has been deleted';
         private static const FOLDER_READ_ERROR:String = 'cannot read folder "%s"';
-        private static const ICON_SIZE:Number = 16;
         private static const IMAGE_READ_ERROR:String = 'cannot load image';
         private static const LISTING_FILES:String = 'reading files in folder "%s"...';
         private static const LISTING_FOLDERS:String = 'reading sub-folders in "%s"...';
@@ -74,42 +72,41 @@
         private static const NO_FILES:String = 'no files at this location';
         private static const NO_FOLDERS:String = 'no folders at this location';
         private static const NO_MATCHED_ITEMS:String = 'no items matched this filter: "%s"';
-        private static const ONLY:String = 'only';
-        private static const OUTER_BORDER:Number = 10;
-        private static const PARENT_FOLDER_LABEL:String = 'Parent Folder';
+        private static const PARENT_FOLDER_LABEL:String = 'Go to parent folder';
         private static const PREVIEW_SIZE:Number = 128;
-        private static const TOOL_MIN_HEIGHT:Number = 21;
-        private static const TOOL_MIN_WIDTH:Number = 100;
 
         private var _explicitRequestedFile:File;
         private var _explicitReqFileWithType:File;
         private var _fileFilter:Array;
         private var _files:ArrayCollection;
-        [Bindable]
-        private var _filesSortDirection:int = 0;
         private var _filesSortOrder:Array;
         private var _folders:ArrayCollection;
-        [Bindable]
-        private var _foldersSortDirection:int = 0;
         private var _foldersSortOrder:Array;
         private var _haveValidImage:Boolean;
         private var _home:File = File.desktopDirectory;
         private var _imagePreviewLoader:Loader;
         private var _isFileFilterChanged:Boolean;
         private var _isHomeChanged:Boolean;
-
         private var _isSearchReset:Boolean;
         private var _isSelectingFoldersAllowed:Boolean = true;
         private var _isSelectionTypeChanged:Boolean;
         private var _locationProcrastinator:Procrastinator;
-        [Bindable]
-        private var _minButtonSize:Number = 0;
-        [Bindable]
-        private var _minLabelSize:Number = 0;
         private var _mustApplyFilteringAndSorting:Boolean;
         private var _searchValue:String;
         private var _selectedItem:Object;
         private var _selectionProcrastinator:Procrastinator;
+
+        [Bindable]
+        private var _filesSortDirection:int = 0;
+
+        [Bindable]
+        private var _foldersSortDirection:int = 0;
+
+        [Bindable]
+        private var _minButtonSize:Number = 0;
+
+        [Bindable]
+        private var _minLabelSize:Number = 0;
 
         public function set fileFilter(value:Array):void {
             if (!FileFilterEntry.areSetsEqual(_fileFilter, value)) {
@@ -351,7 +348,7 @@
         }
 
         private function _clearListMessage(fromAboveThisList:List):void {
-            var targetLabel:mx.controls.Label;
+            var targetLabel:Label;
             switch (fromAboveThisList) {
                 case foldersList:
                     targetLabel = foldersMessageLabel;
@@ -364,7 +361,6 @@
                 targetLabel.visible = false;
                 targetLabel.text = '';
             }
-            var dummy:Error = new Error;
         }
 
         private function _isFileSelected(file:File):Boolean {
@@ -401,7 +397,7 @@
             }
         }
 
-        private function _makeCollection(source:Array, filter:int = FOLDERS_AND_FILES, icon:Class = null):ArrayCollection {
+        private static function _makeCollection(source:Array, filter:int = FOLDERS_AND_FILES, icon:Class = null):ArrayCollection {
             var collection:ArrayCollection = new ArrayCollection;
             for (var i:int = 0; i < source.length; i++) {
                 var file:File = (source[i] as File);
@@ -409,12 +405,16 @@
                     var mustIncludeFile:Boolean = (filter == FOLDERS_AND_FILES) || (file.isDirectory && filter == FOLDERS_ONLY) || (!file.isDirectory && filter == FILES_ONLY);
                     if (mustIncludeFile) {
                         var itemData:Object = {};
-                        itemData[GenericFieldNames.LABEL] = Strings.trim(file.name);
+                        var fileName:String = Strings.trim(file.name);
+                        if (!file.parent && OSFamily.isMac) {
+                            fileName = ROOT_LABEL;
+                        }
+                        itemData[GenericFieldNames.LABEL] = fileName;
                         itemData[FieldNames.TIMESTAMP] = file.creationDate;
                         if (icon != null) {
                             itemData[GenericFieldNames.ICON] = icon;
                         } else {
-                            itemData[GenericFieldNames.ICON] = (file.isDirectory ? Images.FOLDER_32 : Images.FILE_32);
+                            itemData[GenericFieldNames.ICON] = (file.isDirectory ? (file.parent ? Images.FOLDER_32 : Images.HOME_32) : Images.FILE_32);
                         }
                         itemData[GenericFieldNames.FILE] = file;
                         if (!file.isDirectory) {
@@ -428,28 +428,28 @@
             return collection;
         }
 
-        private function _makeFilesListData(source:Array):ArrayCollection {
+        private static function _makeFilesListData(source:Array):ArrayCollection {
             return _makeCollection(source, FILES_ONLY);
         }
 
-        private function _makeFoldersListData(source:Array):ArrayCollection {
+        private static function _makeFoldersListData(source:Array):ArrayCollection {
             return _makeCollection(source, FOLDERS_ONLY);
         }
 
         /**
-         * "Trims" a file name by actually creating and returning  a new File based on the trimmed name of the provided
-         * one. Unfortunatelyn the "name" property of File objects is read-only.
+         * "Trims" a file name by actually creating and returning a new File based on the trimmed name of the provided
+         * one. Unfortunately the "name" property of File objects is read-only.
          */
-        private function _trimFileName (file : File) : File {
-            var fileParent : File = file.parent;
-            var fileName : String = Strings.trim (Files.getStrippedOffFileName (file));
-            var fileExtension : String = file.extension;
-            if (CommonStrings.DOT.concat (fileExtension) == fileName) {
+        private static function _trimFileName(file:File):File {
+            var fileParent:File = file.parent;
+            var fileName:String = Strings.trim(Files.getStrippedOffFileName(file));
+            var fileExtension:String = file.extension;
+            if (CommonStrings.DOT.concat(fileExtension) == fileName) {
                 fileExtension = null;
             }
-            var replacementFileNameWithType : String = (fileExtension? fileName.concat (CommonStrings.DOT, fileExtension) : fileName);
-            var replacementFile : File = fileParent? fileParent.resolvePath (replacementFileNameWithType) :
-                    new File (replacementFileNameWithType);
+            var replacementFileNameWithType:String = (fileExtension ? fileName.concat(CommonStrings.DOT, fileExtension) : fileName);
+            var replacementFile:File = fileParent ? fileParent.resolvePath(replacementFileNameWithType) :
+                    new File(replacementFileNameWithType);
             return replacementFile;
         }
 
@@ -522,20 +522,28 @@
         private function _onFolderChanged(event:ListEvent):void {
             var item:Object = event.itemRenderer.data;
             if (item != null) {
-                var file:File = (item[GenericFieldNames.FILE] as File);
-                // A null file is legit, it links back to the drives list;
-                // a non-null, yet non-existing folder, however, is not - it means
-                // that we are dealing with an old, cached version of the file
-                // system. We'll try to recover gracefully from it.
-                if (file != null && !file.exists) {
-                    folders = new ArrayCollection;
-                    files = new ArrayCollection;
-                    _showListMessage(foldersList, FOLDER_DOES_NOT_EXIST.replace('%s', file.name));
-                    _showListMessage(filesList, NO_FILES);
-                    return;
-                }
-                home = file;
+                var folder:File = (item[GenericFieldNames.FILE] as File);
+                _goIntoFolder(folder);
             }
+        }
+
+        /**
+         * Lists content of given `folder`.
+         * @param folder
+         */
+        private function _goIntoFolder(folder:File):void {
+            // A null file is legit, it links back to the drives list;
+            // a non-null, yet non-existing folder, however, is not - it means
+            // that we are dealing with an old, cached version of the file
+            // system. We'll try to recover gracefully from it.
+            if (folder != null && !folder.exists) {
+                folders = new ArrayCollection;
+                files = new ArrayCollection;
+                _showListMessage(foldersList, FOLDER_DOES_NOT_EXIST.replace('%s', folder.name));
+                _showListMessage(filesList, NO_FILES);
+                return;
+            }
+            home = folder;
         }
 
         private function _onInitialize(event:FlexEvent):void {
@@ -549,7 +557,7 @@
         private function _onLabelReady(event:FlexEvent):void {
             // This makes sure the two labels, "Location" and "Selection" have the
             // same width.
-            var label:mx.controls.Label = (event.target as mx.controls.Label);
+            var label:Label = (event.target as Label);
             if (_minLabelSize < label.width) {
                 _minLabelSize = label.width;
             }
@@ -577,7 +585,7 @@
                 selectedFile = _explicitReqFileWithType;
 
                 // User might have added leading or trailing spaces, which are a bad thing (under Windows at least).
-                selectedFile = _trimFileName (selectedFile);
+                selectedFile = _trimFileName(selectedFile);
             }
             var selectEvent:FileSelectionEvent = new FileSelectionEvent(FileSelectionEvent.FILE_SELECTED, selectedFile);
             dispatchEvent(selectEvent);
@@ -610,7 +618,7 @@
                     dataProvider = FOLDERS_SORT_CRITERIA;
                     break;
                 case filesSort:
-                    dataProvider = FILES_SORT_CRTITERIA;
+                    dataProvider = FILES_SORT_CRITERIA;
                     break;
             }
 
@@ -623,7 +631,7 @@
             popup.addEventListener(MenuEvent.ITEM_CLICK, _onSortOrderChange);
 
             // Initialize the button
-            button.label = ELIPSIS;
+            button.label = ELLIPSIS;
             button.popUp = popup;
             button.addEventListener(MouseEvent.CLICK, _onSortDirectionChange);
         }
@@ -679,8 +687,8 @@
                                 if (_filesSortDirection == 0) {
                                     _filesSortDirection = 1;
                                 }
-                                selIndex = FILES_SORT_CRTITERIA.indexOf(selection);
-                                _filesSortOrder = FILES_SORT_CRTITERIA.concat();
+                                selIndex = FILES_SORT_CRITERIA.indexOf(selection);
+                                _filesSortOrder = FILES_SORT_CRITERIA.concat();
                                 _filesSortOrder.splice(selIndex, 1);
                                 _filesSortOrder.unshift(selection);
                                 break;
@@ -692,7 +700,6 @@
         }
 
         private function _onUpFolderButtonInit(event:FlexEvent):void {
-            var iconStyle:* = upFolderButton.getStyle('icon');
             var buttonIcon:Class = (upFolderButton.getStyle('icon') as Class);
             if (buttonIcon != null) {
                 var bmp:BitmapData = Draw.resourceToBitmapData(buttonIcon);
@@ -768,7 +775,7 @@
         private function _proofUserSelection():void {
 //            var providedSelection:String = Strings.trim(selectionTextInput.text);
             var providedSelection:String = selectionTextInput.text;
-            if (Strings.canHaveInfo (providedSelection)) {
+            if (Strings.canHaveInfo(providedSelection)) {
                 var selectedFile:File = (_selectedItem == null) ? null : _selectedItem[GenericFieldNames.FILE];
                 if (selectedFile == null || providedSelection != selectedFile.name) {
 
@@ -823,41 +830,41 @@
          * b) it does contain such property, but the value of that property does not contain the substring
          *    <filteringValue>.
          *
-         * @param 	collection
-         * 			The collection to filter.
+         * @param    collection
+         *            The collection to filter.
          *
-         * @param	filterCriteria
-         * 			A chain of criteria to match against every particular item. Technically, this chain is
-         * 			an array holding objects with these keys:
+         * @param    filterCriteria
+         *            A chain of criteria to match against every particular item. Technically, this chain is
+         *            an array holding objects with these keys:
          *
-         * 			- "filteringKey": a named property expected to be found in each item. If not set, criteria will be skipped.
+         *            - "filteringKey": a named property expected to be found in each item. If not set, criteria will be skipped.
          *
-         * 			- "filteringValue": a substring expected to be found within the value of the named property described
-         * 			  above. If not set, criteria will be skipped.
+         *            - "filteringValue": a substring expected to be found within the value of the named property described
+         *              above. If not set, criteria will be skipped.
          *
-         * 			- "breakOnFailure": a boolean, indicating whether failure to match an item will break out from the criteria
-         *            chain, yelding a "not found" result, or will allow the search to continue down the chain. If not set, it
-         * 			  will be assumed false.
+         *            - "breakOnFailure": a boolean, indicating whether failure to match an item will break out from the criteria
+         *            chain, yielding a "not found" result, or will allow the search to continue down the chain. If not set, it
+         *              will be assumed false.
          *
-         * 			- "breakOnSuccess": a boolean, indicating whether success to match an item will break out from the criteria
-         * 			  chain, yelding a "found" result immediately, or will allow the search to continue down the chain, posiibly
-         * 			  invalidating the positive result. If not set, it will be assumed false.
+         *            - "breakOnSuccess": a boolean, indicating whether success to match an item will break out from the criteria
+         *              chain, yielding a "found" result immediately, or will allow the search to continue down the chain, possibly
+         *              invalidating the positive result. If not set, it will be assumed false.
          *
-         * 			You may set the filterCriteria argument to null, which will return the original collection, with no changes.
+         *            You may set the filterCriteria argument to null, which will return the original collection, with no changes.
          *
-         * @param	sortCriteria
-         * 			A chain of criteria to determine the order in which filtered items appear. Technically, this chain is
+         * @param    sortCriteria
+         *            A chain of criteria to determine the order in which filtered items appear. Technically, this chain is
          *          an array holding objects with this keys:
          *
-         * 			- "sortingKey": a named property expected to be found in each item. If not set, criteria will be skipped.
+         *            - "sortingKey": a named property expected to be found in each item. If not set, criteria will be skipped.
          *
-         * 			- "sortingDirection": a boolean, indicating whether sorting will be done ascending (e.g.: A, B, C) or
+         *            - "sortingDirection": a boolean, indicating whether sorting will be done ascending (e.g.: A, B, C) or
          *            descending (e.g.: C, B, A). If not set, it will be assumed false (that is, descending).
          *
-         * 			You may set the sortCriteria argument to null, which will return items in their natural order.
+         *            You may set the sortCriteria argument to null, which will return items in their natural order.
          *
-         * @return	A Point object, holding the number of items after filtering (x), versus the number of items before
-         * 			filtering (y).
+         * @return    A Point object, holding the number of items after filtering (x), versus the number of items before
+         *            filtering (y).
          */
         private function _refineCollection(collection:ArrayCollection, filterCriteria:Array, sortCriteria:Array):Point {
             collection.filterFunction = null;
@@ -870,8 +877,8 @@
                         var criteriaItem:Object = filterCriteria[j];
                         var filteringKey:String = criteriaItem['filteringKey'];
                         var filteringValue:Array = criteriaItem['filteringValue'];
-                        var breakOnFailure:Boolean = (criteriaItem['breakOnFailure'] === true);
-                        var breakOnSuccess:Boolean = (criteriaItem['breakOnSuccess'] === true);
+                        var breakOnFailure:Boolean = criteriaItem.breakOnFailure;
+                        var breakOnSuccess:Boolean = criteriaItem.breakOnSuccess;
                         if (filteringKey != null && filteringValue != null) {
                             if (filteringKey in item) {
                                 var actualValue:String = (item[filteringKey] as String);
@@ -905,9 +912,9 @@
                 for (var i:int = 0; i < sortCriteria.length; i++) {
                     var criteriaItem:Object = sortCriteria[i];
                     if (criteriaItem != null) {
-                        var sortingKey:String = (criteriaItem['sortingKey'] as String);
+                        var sortingKey:String = (criteriaItem.sortingKey as String);
                         if (sortingKey != null) {
-                            var isAscending:Boolean = criteriaItem['sortingDirection'] === true;
+                            var isAscending:Boolean = criteriaItem.sortingDirection;
                             var field:SortField = new SortField(sortingKey, true, !isAscending);
                             fields.push(field);
                         }
@@ -925,7 +932,7 @@
 
         private function _showDrives():void {
             _showListMessage(foldersList, ACCESSING_DRIVES);
-            ro.ciacob.utils.Time.delay(DRIVES_ACCESS_DELAY, function ():void {
+            Time.delay(DRIVES_ACCESS_DELAY, function ():void {
                 var drives:Array = File.getRootDirectories();
                 folders = _makeFoldersListData(drives);
             });
@@ -942,7 +949,7 @@
         }
 
         private function _showListMessage(aboveList:List, message:String):void {
-            var targetLabel:mx.controls.Label;
+            var targetLabel:Label;
             switch (aboveList) {
                 case foldersList:
                     targetLabel = foldersMessageLabel;
@@ -969,7 +976,7 @@
                     foldersSort.label = _foldersSortOrder[0][GenericFieldNames.LABEL];
                 }
                 if (_filesSortOrder == null) {
-                    _filesSortOrder = FILES_SORT_CRTITERIA.concat();
+                    _filesSortOrder = FILES_SORT_CRITERIA.concat();
                     _filesSortDirection = 1;
                     filesSort.label = _filesSortOrder[0][GenericFieldNames.LABEL];
                 }
@@ -979,10 +986,10 @@
                 filesSort.enabled = false;
                 _foldersSortOrder = null;
                 _foldersSortDirection = 0;
-                foldersSort.label = ELIPSIS;
+                foldersSort.label = ELLIPSIS;
                 _filesSortOrder = null;
                 _filesSortDirection = 0;
-                filesSort.label = ELIPSIS;
+                filesSort.label = ELLIPSIS;
             }
         }
 
@@ -999,11 +1006,9 @@
                 if (selectedFile != null) {
 
                     // Update file icon
-                    var icons:Array = Draw.getFileIcons(selectedFile);
-                    if (icons != null) {
-                        var icon:BitmapData = (icons[icons.length - 1] as BitmapData);
-                        fileIcon.source = icon;
-                    }
+                    fileIcon.source = selectedFile.isDirectory ?
+                            (selectedFile.parent ? Images.FOLDER_32 : Images.HOME_32) :
+                            Images.FILE_32;
 
                     // Update file name
                     detailsFileName.text = selectedFile.name;
@@ -1046,11 +1051,8 @@
                     fileSizeLabel.text = Files.formatFileSize(rawSize).concat(details);
 
                     // Update file date
-                    var rawDate:Date = selectedFile.creationDate;
-                    var formatter:DateFormatter = new DateFormatter;
-                    formatter.formatString = Time.TIMESTAMP_DEFAULT;
-                    var date:String = formatter.format(rawDate);
-                    fileDateLabel.text = date;
+                    creationDateLabel.text = _formatDate(selectedFile.creationDate);
+                    modificationDateLabel.text = _formatDate(selectedFile.modificationDate);
 
                     // Update image preview: for PNG and JPEG files only
                     _haveValidImage = selectedFile.exists && Files.isFileOfType(selectedFile, [FileTypes.PNG, FileTypes.JPEG, FileTypes.JPG]);
@@ -1065,6 +1067,12 @@
                     }
                 }
             }
+        }
+
+        private function _formatDate(rawDate:Date):String {
+            var formatter:DateFormatter = new DateFormatter;
+            formatter.formatString = Time.TIMESTAMP_DEFAULT;
+            return formatter.format(rawDate);
         }
 
         private function _updateFilesList():void {
@@ -1345,11 +1353,23 @@
                     <mx:GridRow verticalAlign="middle"
                                 width="100%">
                         <mx:GridItem>
-                            <mx:Label text="Date:"/>
+                            <mx:Label text="Created:"/>
                         </mx:GridItem>
 
                         <mx:GridItem width="100%">
-                            <mx:Label id="fileDateLabel"/>
+                            <mx:Label id="creationDateLabel"/>
+                        </mx:GridItem>
+                    </mx:GridRow>
+
+                    <!-- File modification date -->
+                    <mx:GridRow verticalAlign="middle"
+                                width="100%">
+                        <mx:GridItem>
+                            <mx:Label text="Modified:"/>
+                        </mx:GridItem>
+
+                        <mx:GridItem width="100%">
+                            <mx:Label id="modificationDateLabel"/>
                         </mx:GridItem>
                     </mx:GridRow>
 

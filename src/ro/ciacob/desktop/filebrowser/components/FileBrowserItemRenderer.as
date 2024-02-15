@@ -1,18 +1,17 @@
 package ro.ciacob.desktop.filebrowser.components {
-	import mx.containers.Canvas;
-	import mx.controls.Image;
-	import mx.controls.Label;
-	import mx.core.UIComponent;
-	import mx.styles.CSSStyleDeclaration;
-	import mx.styles.IStyleManager2;
-	
-	import ro.ciacob.desktop.filebrowser.constants.Sizes;
-	import ro.ciacob.utils.constants.GenericSizes;
+import mx.containers.Canvas;
+import mx.controls.Image;
+import mx.controls.Label;
+import mx.core.UIComponent;
+import mx.styles.CSSStyleDeclaration;
+import mx.styles.IStyleManager2;
 
-	public class FileBrowserItemRenderer extends Canvas {
+import ro.ciacob.utils.constants.GenericSizes;
+
+public class FileBrowserItemRenderer extends Canvas {
 		private static const ICON_SIZE:Number = 32;
 		private static const LIST_STYLE_NAME:String = 'mx.controls.List';
-		private static const TEXT_SIZE:Number = 12.8;
+		private static const TEXT_SIZE:Number = 13;
 
 		public function FileBrowserItemRenderer() {
 			mouseChildren = false;
@@ -40,12 +39,12 @@ package ro.ciacob.desktop.filebrowser.components {
 			super.data = value;
 			if (value != null) {
 				if ('icon' in value) {
-					_imageData = value['icon'];
+					_imageData = value.icon;
 					_imageDataChanged = true;
 					invalidateProperties();
 				}
-				if (_textData != value['label']) {
-					_textData = value['label'];
+				if (_textData != value.label) {
+					_textData = value.label;
 					_textDataChanged = true;
 					invalidateProperties();
 				}
