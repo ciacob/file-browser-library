@@ -773,7 +773,6 @@
         }
 
         private function _proofUserSelection():void {
-//            var providedSelection:String = Strings.trim(selectionTextInput.text);
             var providedSelection:String = selectionTextInput.text;
             if (Strings.canHaveInfo(providedSelection)) {
                 var selectedFile:File = (_selectedItem == null) ? null : _selectedItem[GenericFieldNames.FILE];
