@@ -14,6 +14,8 @@
 
     <fx:Script>
 		<![CDATA[
+        import flash.permissions.PermissionStatus;
+
         import mx.collections.ArrayCollection;
         import mx.collections.ICollectionView;
         import mx.collections.IViewCursor;
@@ -42,6 +44,8 @@
         import ro.ciacob.utils.constants.GenericFieldNames;
         import ro.ciacob.utils.constants.GenericSizes;
 
+        private static const REQUESTING_PERMISSION:String = 'requesting permission...';
+        private static const PERMISSION_DENIED = 'access denied to files of folder "%s"'
         private static const ACCESSING_DRIVES:String = 'accessing disk drives...';
         private static const AVAILABLE:String = ' available';
         private static const COLLECTIONS_READY:String = 'collectionsReady';
@@ -75,6 +79,7 @@
         private static const PARENT_FOLDER_LABEL:String = 'Go to parent folder';
         private static const PREVIEW_SIZE:Number = 128;
 
+        private var _folderPendingAccess:File;
         private var _explicitRequestedFile:File;
         private var _explicitReqFileWithType:File;
         private var _fileFilter:Array;
@@ -135,16 +140,43 @@
 
         public function set home(value:File):void {
             if (_home != value) {
-                _home = value;
-                _isHomeChanged = true;
-                if (value != null && value.exists && value.isDirectory) {
-                    if (!Strings.isEmpty(_searchValue)) {
-                        search.reset();
-                        _searchValue = null;
-                        _isSearchReset = true;
+
+                // There is no access permission we can request against a `null` directory, so we just pass it
+                // along. A value of `null` for `home` means root directory (macOS) or drives list (Windows).
+                if (value == null) {
+                    _home = value;
+                    _isHomeChanged = true;
+                    invalidateProperties();
+                    return;
+                }
+
+                // For all other cases, we must formally request permission from the underlying OS to access the
+                // content of that folder.
+                // Note: receiving a response to a permission request is async; user might well have changed his mind,
+                // and be requesting for another folder until the aswer comes back. In order to make sure that we do
+                // not deliver the files of an obsolete folder, we maintain both a reference to the "current", or "last"
+                // folder the user has requested permission to view the files of (stored as the class member
+                // "_folderPendingAccess") and each of the original folders, as they are requested (stored inside the
+                // event listener closure, via `event.target`). WE WILL ONLY LIST FILES IF THE TWO MATCH. If they don't,
+                // that means we are receiving a response for an old request, one that is not of interest to the user
+                // anymore, and that we need to discard.
+                files = new ArrayCollection;
+                _showListMessage(filesList, REQUESTING_PERMISSION);
+                _folderPendingAccess = value;
+                var onPermissionStatusResponse : Function = function (event : PermissionEvent) : void {
+                    var relatedDir : File = (event.target as File);
+                    relatedDir.removeEventListener(PermissionEvent.PERMISSION_STATUS, onPermissionStatusResponse);
+                    if (relatedDir === _folderPendingAccess) {
+                        _folderPendingAccess = null;
+                        if (event.status == PermissionStatus.GRANTED) {
+                            _applyNewHomeDir (relatedDir);
+                        } else {
+                            _showListMessage(filesList, Strings.sprintf (PERMISSION_DENIED, relatedDir.name));
+                        }
                     }
                 }
-                invalidateProperties();
+                _folderPendingAccess.addEventListener(PermissionEvent.PERMISSION_STATUS, onPermissionStatusResponse);
+                _folderPendingAccess.requestPermission();
             }
         }
 
@@ -211,6 +243,25 @@
         protected function set folders(value:ArrayCollection):void {
             _folders = value;
             _clearListMessage(foldersList);
+        }
+
+        /**
+         * Actually carries on "looking into" the given `dir` folder. This is a low-level
+         * function, and `dir` is assumed to be non-null (there is no protection at this level).
+         * @param   dir
+         *          The new directory to "look into". MUST be non-null, or code will crash.
+         */
+        private function _applyNewHomeDir (dir : File) : void {
+            _home = dir;
+            _isHomeChanged = true;
+            if (dir.exists && dir.isDirectory) {
+                if (!Strings.isEmpty(_searchValue)) {
+                    search.reset();
+                    _searchValue = null;
+                    _isSearchReset = true;
+                }
+            }
+            invalidateProperties();
         }
 
         private function _applyFilteringAndSorting():void {
@@ -338,6 +389,7 @@
             if (!folder.hasEventListener(FileListEvent.DIRECTORY_LISTING)) {
                 folder.addEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
                 folder.addEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
+                folder.addEventListener(SecurityErrorEvent.SECURITY_ERROR, _onDirectoriesListingError);
                 folder.getDirectoryListingAsync();
             }
         }
@@ -401,7 +453,10 @@
             var collection:ArrayCollection = new ArrayCollection;
             for (var i:int = 0; i < source.length; i++) {
                 var file:File = (source[i] as File);
-                if (file != null && Files.isVisible(file)) {
+                if (file != null) {
+                    if (!Files.isVisible(file)) {
+                        continue;
+                    }
                     var mustIncludeFile:Boolean = (filter == FOLDERS_AND_FILES) || (file.isDirectory && filter == FOLDERS_ONLY) || (!file.isDirectory && filter == FILES_ONLY);
                     if (mustIncludeFile) {
                         var itemData:Object = {};
@@ -459,15 +514,21 @@
         }
 
         private function _onDirectoriesEnumerated(event:FileListEvent):void {
-            parent.removeEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
-            parent.removeEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
+            var targetFile : File = (event.target as File);
+            targetFile.removeEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
+            targetFile.removeEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
+            targetFile.removeEventListener(SecurityErrorEvent.SECURITY_ERROR, _onDirectoriesListingError);
             var foldersCollection:ArrayCollection = _makeFoldersListData(event.files);
             folders = foldersCollection;
             if (folders.length == 0) {
                 _showListMessage(foldersList, NO_FOLDERS);
             }
-            files = _makeFilesListData(event.files);
-            if (files.length == 0) {
+            try {
+                files = _makeFilesListData(event.files);
+            } catch (e : Error) {
+                _showListMessage(filesList, Strings.sprintf (PERMISSION_DENIED, (event.target as File).name));
+            }
+            if (files && files.length == 0) {
                 _showListMessage(filesList, NO_FILES);
             }
             _applyFilteringAndSorting();
@@ -476,10 +537,12 @@
         }
 
         private function _onDirectoriesListingError(event:IOErrorEvent):void {
-            parent.removeEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
-            parent.removeEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
-            var collection:ArrayCollection = new ArrayCollection;
-            folders = collection;
+            var targetFile : File = (event.target as File);
+            targetFile.removeEventListener(FileListEvent.DIRECTORY_LISTING, _onDirectoriesEnumerated);
+            targetFile.removeEventListener(IOErrorEvent.IO_ERROR, _onDirectoriesListingError);
+            targetFile.removeEventListener(SecurityErrorEvent.SECURITY_ERROR, _onDirectoriesListingError);
+            folders = new ArrayCollection;
+            files = new ArrayCollection;
             _showListMessage(foldersList, FOLDER_READ_ERROR.replace('%s', _home.name));
             _showListMessage(filesList, FOLDER_READ_ERROR.replace('%s', _home.name));
         }
@@ -1068,7 +1131,7 @@
             }
         }
 
-        private function _formatDate(rawDate:Date):String {
+        private static function _formatDate(rawDate:Date):String {
             var formatter:DateFormatter = new DateFormatter;
             formatter.formatString = Time.TIMESTAMP_DEFAULT;
             return formatter.format(rawDate);
