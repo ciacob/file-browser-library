@@ -45,7 +45,7 @@
         import ro.ciacob.utils.constants.GenericSizes;
 
         private static const REQUESTING_PERMISSION:String = 'requesting permission...';
-        private static const PERMISSION_DENIED = 'access denied to files of folder "%s"'
+        private static const PERMISSION_DENIED:String = 'access denied to files of folder "%s"'
         private static const ACCESSING_DRIVES:String = 'accessing disk drives...';
         private static const AVAILABLE:String = ' available';
         private static const COLLECTIONS_READY:String = 'collectionsReady';
